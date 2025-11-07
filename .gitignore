@@ -1,0 +1,42 @@
+# 파이썬 기본
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+*.log
+
+# 가상환경 및 의존성
+env/
+.venv/
+venv/
+pip-wheel-metadata/
+pip-log.txt
+
+# 환경 변수 파일
+.env
+.env.*
+
+# 캐시 및 빌드 산출물
+.DS_Store
+.ipynb_checkpoints/
+*.sqlite3
+*.db
+*.tmp
+
+# LangChain/Chroma 등 로컬 저장소
+*.faiss
+*.pkl
+chroma/
+chroma_db/
+vector_db/
+*/restaurant-faiss/
+*.chroma
+*.jsonl
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+
+# 노트북 실행 결과
+*.nbconvert.ipynb
