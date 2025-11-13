@@ -40,3 +40,6 @@ vector_db/
 
 # 노트북 실행 결과
 *.nbconvert.ipynb
+
+fashion-rag/fashion_dataset/
+fashion-rag/img_vdb/
