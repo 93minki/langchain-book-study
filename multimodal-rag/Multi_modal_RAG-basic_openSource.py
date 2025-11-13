@@ -12,6 +12,7 @@ import json
 import uuid
 import io
 import re
+import time
 from IPython.display import HTML, display
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.prompts import ChatPromptTemplate
@@ -61,8 +62,8 @@ def categorize_elements(raw_pdf_elements):
 
 
 current_directory = os.getcwd()
-fname = "20250930_032910050110.pdf"
-# fname = "invest.pdf"
+# fname = "20250930_032910050110.pdf"
+fname = "invest.pdf"
 fpath = os.path.join(current_directory, "multimodal-rag", "invest")
 
 # print("현재 스크립트의 위치:", current_directory)
@@ -122,14 +123,14 @@ def generate_text_summaries(texts, tables, summarize_texts=False):
 
     # 텍스트 요약을 활성화한 경우
     if texts and summarize_texts:
-        text_summaries = summarize_chain.batch(texts, {"max_concurrency": 5})
+        text_summaries = summarize_chain.batch(texts, {"max_concurrency": 1})
         # 텍스트 요약을 사용하지 않는 경우
     elif texts:
         text_summaries = texts
 
     # 테이블 데이터 요약
     if tables:
-        table_summaries = summarize_chain.batch(tables, {"max_concurrency": 5})
+        table_summaries = summarize_chain.batch(tables, {"max_concurrency": 1})
 
     return text_summaries, table_summaries
 
@@ -145,25 +146,41 @@ def encode_image(image_path):
         return base64.b64encode(image_file.read()).decode("utf-8")
 
 
-def image_summarize(img_base64, prompt):
-    """이미지 요약 생성"""
+def image_summarize(img_base64, prompt, max_retries=5):
+    """이미지 요약 생성 (Rate limit 에러 처리 포함)"""
     # chat = ChatOpenAI(model="gpt-4-vision-preview", max_tokens=1024)
     chat = ChatOpenAI(model="gpt-4o-mini", max_tokens=1024)
-    msg = chat.invoke(
-        [
-            HumanMessage(
-                content=[
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"},
-                    },
+
+    for attempt in range(max_retries):
+        try:
+            msg = chat.invoke(
+                [
+                    HumanMessage(
+                        content=[
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{img_base64}"
+                                },
+                            },
+                        ]
+                    )
                 ]
             )
-        ]
-    )
-    print(msg)
-    return msg.content
+            print(msg)
+            return msg.content
+        except Exception as e:
+            if "rate_limit" in str(e).lower() or "429" in str(e):
+                wait_time = (2**attempt) * 0.5  # 지수 백오프: 0.5초, 1초, 2초, 4초, 8초
+                print(
+                    f"Rate limit 에러 발생. {wait_time:.1f}초 후 재시도... (시도 {attempt + 1}/{max_retries})"
+                )
+                time.sleep(wait_time)
+            else:
+                print(f"에러 발생: {e}")
+                raise
+    raise Exception(f"최대 재시도 횟수({max_retries})를 초과했습니다.")
 
 
 def image_summarize_llava(img_base64, prompt):
@@ -232,6 +249,8 @@ def generate_image_summaries(path):
             # 또한, openai api의 image_summarize(base64_image, prompt_kor)를 사용하여 대체할 수도 있다.
             # 여기서는 한국어로 요약된 결과를 사용하고 있다.
             image_summaries.append(image_summarize(base64_image, prompt_kor))
+            # Rate limit을 피하기 위해 요청 간 대기 시간 증가 (1초)
+            time.sleep(1.0)
     return img_base64_list, image_summaries
 
 
@@ -328,13 +347,24 @@ def plt_img_base64(img_base64):
 
 def looks_like_base64(sb):
     """문자열이 base64 형식인지 확인"""
-    return re.match(f"^[A-Za-z0-9+/]+[=]{0,2}$", sb) is not None
+    if not isinstance(sb, str):
+        return False
+    # base64 문자열은 최소 길이가 있어야 함.
+    if len(sb) < 100:
+        return False
+    # 공백과 줄바꿈 제거 후 확인
+    sb_clean = sb.replace(" ", "").replace("\n", "")
+
+    return re.match(r"^[A-Za-z0-9+/]+=*$", sb_clean) is not None
 
 
 def is_image_data(b64data):
     """
     base64 데이터가 이미지인지 확인 (데이터 시작 부분을 검사)
     """
+    if not isinstance(b64data, str):
+        return False
+
     image_signatures = {
         b"\xff\xd8\xff": "jpg",
         b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a": "png",
@@ -342,12 +372,20 @@ def is_image_data(b64data):
         b"\x52\x49\x46\x46": "webp",
     }
     try:
-        header = base64.b64decode(b64data)[:8]
+        # 공백과 줄바꿈 제거
+        b64data_clean = b64data.replace(" ", "").replace("\n", "")
+        # base64 디코딩 시도 (validate=True로 유효성 검사)
+        decoded = base64.b64decode(b64data_clean, validate=True)
+        if len(decoded) < 8:
+            return False
+        header = decoded[:8]
         for sig, format in image_signatures.items():
             if header.startswith(sig):
                 return True
         return False
-    except Exception:
+    except Exception as e:
+        # 디버깅을 위해 예외 정보 출력 (선택사항)
+        # print(f"is_image_data 예외: {type(e).__name__}: {e}")
         return False
 
 
@@ -372,19 +410,51 @@ def resize_base64_image(base64_string, size=(128, 128)):
 
 def split_image_text_types(docs):
     """
-    Base64로 인코딩된 이미지를 크기 조정
+    문서에서 이미지와 텍스트를 분리
     """
     b64_images = []
     texts = []
-    for doc in docs:
+    for i, doc in enumerate(docs):
         # 문서 유형이 Document일 경우 page_content 추출
         if isinstance(doc, Document):
-            doc = doc.page_content
-        if looks_like_base64(doc) and is_image_data(doc):
-            doc = resize_base64_image(doc, size=(1300, 600))
-            b64_images.append(doc)
+            doc_content = doc.page_content
         else:
-            texts.append(doc)
+            doc_content = doc
+
+        # 문자열이 아니면 텍스트로 처리
+        if not isinstance(doc_content, str):
+            texts.append(doc_content)
+            continue
+
+        # base64 형식인지 확인
+        is_base64 = looks_like_base64(doc_content)
+        if is_base64:
+            # 이미지 데이터인지 확인
+            is_img = is_image_data(doc_content)
+            if is_img:
+                try:
+                    # 공백과 줄바꿈 제거 후 리사이즈
+                    doc_content_clean = doc_content.replace(" ", "").replace("\n", "")
+                    resized_image = resize_base64_image(
+                        doc_content_clean, size=(1300, 600)
+                    )
+                    b64_images.append(resized_image)
+                    # 디버깅 로그 (선택사항)
+                    # print(f"[이미지 감지] 문서 {i}: 이미지로 분류됨 (길이: {len(doc_content)})")
+                    continue
+                except Exception as e:
+                    # 이미지 처리 실패 시 텍스트로 처리 (원본 데이터 보존)
+                    print(f"[이미지 처리 실패] 문서 {i}: {type(e).__name__}: {e}")
+                    texts.append(doc_content)
+            else:
+                # base64 형식이지만 이미지가 아닌 경우 텍스트로 처리
+                texts.append(doc_content)
+        else:
+            # base64 형식이 아닌 경우 텍스트로 처리
+            texts.append(doc_content)
+
+    # 디버깅 로그 (선택사항)
+    # print(f"[분류 결과] 이미지: {len(b64_images)}개, 텍스트: {len(texts)}개")
     return {"images": b64_images, "texts": texts}
 
 
@@ -427,7 +497,7 @@ def multi_modal_rag_chain(retriever):
     """
 
     # 다중 모드 LLM 설정
-    model = ChatOpenAI(temperature=0, model="gpt-4.1", max_tokens=1024)
+    model = ChatOpenAI(temperature=0, model="gpt-4o-mini", max_tokens=1024)
     llava_model = OllamaLLM(model="llava:7b")
     # RAG 파이프라인 설정
     chain = (
