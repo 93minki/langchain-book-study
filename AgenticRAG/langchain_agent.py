@@ -88,6 +88,8 @@ agent = create_openai_tools_agent(llm=openai, tools=tools, prompt=prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 # agent_result = agent_executor.invoke({"input": "llm 관련 최신 논문을 알려줘"})
-agent_result = agent_executor.invoke({"input": "오늘 부동산 관련 주요 소식을 알려줘"})
+agent_result = agent_executor.invoke(
+    {"input": "AI에 대한 논문을 한번 검색해봐 특히 딥러닝과 머신러닝 관련해서"}
+)
 
 print(agent_result)
